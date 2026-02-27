@@ -67,7 +67,16 @@ python scripts/taptap_monitor.py --app-id 236096 --interval 0
 
 ## 集成钉钉推送
 
-可配合 [dingtalk-push](../dingtalk-push) 技能实现新内容自动推送。
+可配合 [dingtalk-push](./dingtalk-push) 技能实现新内容自动推送。
+
+```bash
+# 配置环境变量
+export DINGTALK_WEBHOOK="https://oapi.dingtalk.com/robot/send?access_token=YOUR_TOKEN"
+export DINGTALK_SECRET="YOUR_SECRET"
+
+# 监控并推送
+python scripts/taptap_monitor.py --interval 30 | python dingtalk-push/notify.py
+```
 
 ## 注意事项
 

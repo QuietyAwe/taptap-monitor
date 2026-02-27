@@ -37,6 +37,10 @@ env/
 data/
 *.json
 
+# Secrets
+.env
+*.env.local
+
 # Debug files
 debug_page.html
 temp_page.html
