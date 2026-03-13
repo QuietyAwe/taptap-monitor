@@ -8,7 +8,7 @@ import time
 import re
 import sys
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from playwright.sync_api import sync_playwright, Page, Browser
 
@@ -33,7 +33,7 @@ class TapTapMonitor:
     def _load_data(self):
         """加载已存储的数据"""
         self.existing_topics: Dict[str, Dict] = {}  # link -> topic
-        self.existing_reviews: Dict[str, Dict] = {}  # content_hash -> review
+        self.existing_reviews: Dict[str, Dict] = {}  # id -> review
         
         if os.path.exists(self.data_file):
             try:
@@ -43,23 +43,75 @@ class TapTapMonitor:
                         if topic.get('link'):
                             self.existing_topics[topic['link']] = topic
                     for review in data.get('reviews', []):
-                        # 用内容前100字符+作者作为唯一标识
-                        key = f"{review.get('content', '')[:100]}_{review.get('author', '')}"
-                        self.existing_reviews[key] = review
+                        # 用评价 ID 作为唯一标识
+                        review_id = review.get('id', '')
+                        if review_id:
+                            self.existing_reviews[review_id] = review
                 print(f"已加载 {len(self.existing_topics)} 个帖子, {len(self.existing_reviews)} 条评价")
             except Exception as e:
                 print(f"加载数据失败: {e}")
                 
+    def _parse_time_for_sort(self, time_str: str) -> datetime:
+        """解析时间字符串用于排序，返回 datetime 对象"""
+        if not time_str:
+            return datetime.min
+        
+        try:
+            # 格式1: 2026-02-27 12:23 (NUXT 数据格式)
+            if re.match(r'\d{4}-\d{2}-\d{2}', time_str):
+                return datetime.strptime(time_str[:16], '%Y-%m-%d %H:%M')
+            
+            # 格式2: 2026/02/27
+            if re.match(r'\d{4}/\d{1,2}/\d{1,2}', time_str):
+                return datetime.strptime(time_str[:10], '%Y/%m/%d')
+            
+            # 格式3: 相对时间 (3天前, 2小时前 等) - 转换为近似时间
+            now = datetime.now()
+            match = re.match(r'(\d+)\s*(天|小时|分钟|秒)前', time_str)
+            if match:
+                num = int(match.group(1))
+                unit = match.group(2)
+                if unit == '天':
+                    return now - timedelta(days=num)
+                elif unit == '小时':
+                    return now - timedelta(hours=num)
+                elif unit == '分钟':
+                    return now - timedelta(minutes=num)
+                elif unit == '秒':
+                    return now - timedelta(seconds=num)
+            
+            # 格式4: 刚刚
+            if '刚刚' in time_str:
+                return now - timedelta(minutes=1)
+                
+        except Exception as e:
+            pass
+            
+        return datetime.min
+    
     def _save_data(self):
         """保存数据到文件"""
         # 确保目录存在
         os.makedirs(os.path.dirname(self.data_file) if os.path.dirname(self.data_file) else '.', exist_ok=True)
         
+        # 按时间排序 - 最新的在前面
+        topics = sorted(
+            self.existing_topics.values(),
+            key=lambda x: self._parse_time_for_sort(x.get('time', '')),
+            reverse=True
+        )
+        
+        reviews = sorted(
+            self.existing_reviews.values(),
+            key=lambda x: self._parse_time_for_sort(x.get('time', '')),
+            reverse=True
+        )
+        
         data = {
             "last_updated": datetime.now().isoformat(),
             "app_id": self.app_id,
-            "topics": list(self.existing_topics.values()),
-            "reviews": list(self.existing_reviews.values())
+            "topics": topics,
+            "reviews": reviews
         }
         
         with open(self.data_file, 'w', encoding='utf-8') as f:
@@ -80,9 +132,9 @@ class TapTapMonitor:
         """添加新评价（去重）"""
         new_reviews = []
         for review in reviews:
-            key = f"{review.get('content', '')[:100]}_{review.get('author', '')}"
-            if key not in self.existing_reviews:
-                self.existing_reviews[key] = review
+            review_id = review.get('id', '')
+            if review_id and review_id not in self.existing_reviews:
+                self.existing_reviews[review_id] = review
                 new_reviews.append(review)
         return new_reviews
         
@@ -278,6 +330,9 @@ class TapTapMonitor:
             if t['link'] and t['link'] not in seen:
                 seen.add(t['link'])
                 unique_topics.append(t)
+        
+        # 按时间排序（最新在前）
+        unique_topics.sort(key=lambda x: self._parse_time_for_sort(x.get('time', '')), reverse=True)
                     
         return unique_topics[:max_posts]
         
@@ -468,17 +523,18 @@ class TapTapMonitor:
         except Exception as e:
             return None
             
-    def fetch_reviews(self, max_reviews: int = 20) -> List[Dict]:
+    def fetch_reviews(self, max_reviews: int = 20, sort: str = "new") -> List[Dict]:
         """
         获取最新评价
         
         Args:
             max_reviews: 最大评价数量
+            sort: 排序方式 (new=最新, hot=热门)
         
         Returns:
             评价列表
         """
-        url = f"{self.base_url}/app/{self.app_id}/review"
+        url = f"{self.base_url}/app/{self.app_id}/review?sort={sort}"
         
         try:
             self._start_browser()
@@ -520,45 +576,91 @@ class TapTapMonitor:
         """从 NUXT 数据中解析评价"""
         reviews = []
         
-        def find_reviews(obj, depth=0):
-            if depth > 10:
+        def find_review_list(obj, depth=0):
+            """查找评价列表 - 结构是 list[].moment.review"""
+            if depth > 20:
                 return None
             if isinstance(obj, dict):
-                if 'reviews' in obj and isinstance(obj['reviews'], list):
-                    return obj['reviews']
+                # 检查是否有 list 字段且包含 moment
                 if 'list' in obj and isinstance(obj['list'], list):
-                    if obj['list'] and isinstance(obj['list'][0], dict):
-                        first = obj['list'][0]
-                        if any(k in first for k in ['rating', 'score', 'review']):
+                    for item in obj['list']:
+                        if isinstance(item, dict) and 'moment' in item:
                             return obj['list']
                 for v in obj.values():
-                    result = find_reviews(v, depth + 1)
+                    result = find_review_list(v, depth + 1)
                     if result:
                         return result
             elif isinstance(obj, list):
                 for item in obj:
-                    result = find_reviews(item, depth + 1)
+                    result = find_review_list(item, depth + 1)
                     if result:
                         return result
             return None
             
-        items = find_reviews(data)
+        items = find_review_list(data)
         
         if items:
             for item in items[:max_reviews]:
                 try:
+                    moment = item.get('moment', {})
+                    review_data = moment.get('review', {})
+                    author_data = moment.get('author', {}).get('user', {})
+                    
+                    # 评分 (1-5星)
+                    score = review_data.get('score', '')
+                    rating = f"{score}星" if score else "未评分"
+                    
+                    # 游戏时长 (秒转换为小时)
+                    played_spent = review_data.get('played_spent') or review_data.get('total_played_spent')
+                    played_hours = round(played_spent / 3600, 1) if played_spent else 0
+                    
+                    # 评价内容
+                    contents = review_data.get('contents', {})
+                    content = contents.get('text', '') if isinstance(contents, dict) else str(contents)
+                    # 清理 HTML 标签
+                    content = re.sub(r'<br\s*/?>', '\n', content)
+                    content = re.sub(r'<[^>]+>', '', content)
+                    
+                    # 作者
+                    author = author_data.get('name', '未知')
+                    
+                    # 时间
+                    created_time = moment.get('created_time')
+                    post_time = self._format_timestamp(created_time) if created_time else ''
+                    
+                    # 状态标签（如"玩过"）
+                    stage_label = review_data.get('stage_label', '')
+                    
+                    # 提取评价ID - 短ID在 review_data.id，长ID在 moment.id
+                    # 评价链接需要短ID，如 /review/48009027
+                    review_id = review_data.get('id')  # 短ID
+                    moment_id = moment.get('id_str') or moment.get('id')  # 长ID
+                    
+                    # 使用 review_data 的 ID（短ID）
+                    if review_id:
+                        link = f"{self.base_url}/review/{review_id}"
+                    else:
+                        link = ''
+                    
                     review = {
-                        "rating": str(item.get('rating') or item.get('score', '')),
-                        "content": (item.get('content') or item.get('text', ''))[:300],
-                        "author": item.get('user', {}).get('name', '') or item.get('author', {}).get('name', '未知'),
-                        "time": self._format_timestamp(item.get('created_time') or item.get('created_at')),
-                        "likes": str(item.get('likes_count') or item.get('useful_count') or 0),
+                        "id": str(review_id) if review_id else str(moment_id) if moment_id else '',
+                        "link": link,
+                        "rating": rating,
+                        "score": str(score) if score else '',
+                        "played_hours": str(played_hours) if played_hours else '',
+                        "stage_label": stage_label,
+                        "content": content[:500] if content else '',
+                        "author": author,
+                        "time": post_time,
+                        "likes": str(review_data.get('ups', 0)),
                         "type": "review",
                         "fetched_at": datetime.now().isoformat()
                     }
+                    
                     if review['content']:
                         reviews.append(review)
                 except Exception as e:
+                    print(f"解析评价项失败: {e}")
                     continue
                     
         return reviews
@@ -689,9 +791,8 @@ class TapTapMonitor:
                 else:
                     print(f"\n⭐ 无新评价 (已记录 {len(self.existing_reviews)} 条)")
                     
-                # 保存数据
-                if new_topics or new_reviews:
-                    self._save_data()
+                # 保存数据（总是保存，确保排序）
+                self._save_data()
                     
                 # 等待下一次监控
                 if interval_minutes > 0:
