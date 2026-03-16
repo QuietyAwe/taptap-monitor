@@ -593,6 +593,13 @@ class TapTapReply:
                     pass
             
             print("⚠️ 发送状态未知，假设成功")
+            # 保存截图用于调试
+            try:
+                screenshot_path = os.path.join(self.data_dir, f"debug_review_{int(time.time())}.png")
+                self.page.screenshot(path=screenshot_path)
+                print(f"📸 已保存调试截图: {screenshot_path}")
+            except Exception as e:
+                print(f"⚠️ 截图失败: {e}")
             return True
             
         except Exception as e:
