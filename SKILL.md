@@ -1,221 +1,139 @@
----
-name: taptap-monitor
-description: TapTap 社区监控与自动回复。功能：(1) 获取最新帖子/评价 (2) 自动回复帖子/评价 (3) 自动投诉违规差评。触发词：TapTap监控、获取评价、回复玩家、投诉差评。
----
+# TapTap Monitor
 
-# TapTap 监控技能
+TapTap 社区舆情监控与智能决策辅助系统。
 
-## 一、每日自动监控（推荐）
+## 功能概述
 
-**定时任务**：每天 09:00 自动执行
+- **自动爬取**：定时获取 TapTap 最新帖子和评价
+- **智能去重**：基于历史 ID 记录，避免重复处理
+- **AI 分析**：自动定级、分类、生成决策建议
+- **台账管理**：结构化记录所有舆情数据
+- **钉钉推送**：实时告警，支持同类事件合并
 
-```bash
-cd /home/qee/.picoclaw/workspace/skills/taptap-monitor
-python3 scripts/daily_monitor.py
+## 目录结构
+
+```
+skills/taptap-monitor/
+├── .venv/                    # Python 虚拟环境
+├── scripts/
+│   ├── main_sync.py          # 爬虫主脚本（爬取+去重+生成待分析文件）
+│   └── update_ledger.py      # 台账更新脚本
+├── data/
+│   ├── history_ids.txt       # 已处理的 ID 记录
+│   ├── monitor_log.csv       # 舆情台账
+│   ├── to_analyze.json       # 待分析数据
+│   ├── alert_msg.md          # 钉钉告警消息缓存
+│   ├── bug_tasks.md          # Bug 任务跟踪表
+│   └── daily_reports.md      # 每日舆情日报归档
+├── config.json               # 配置文件
+└── SKILL.md                  # 本文档
 ```
 
-**自动化流程**：
-1. 获取最新帖子 + 评价
-2. 过滤版主帖、系统分享帖
-3. 对比已回复记录去重
-4. 调用菜汪技能生成回复
-5. 推送到钉钉待确认
+## 配置说明
 
-**输出文件**：
-- `data/pending_replies.json` - 待回复列表
-- `data/push_content.md` - 推送内容
+`config.json` 字段：
 
----
+| 字段    | 说明           | 示例     |
+| ------- | -------------- | -------- |
+| game_id | TapTap 游戏 ID | "259153" |
+| cookie  | 登录凭证       | "..."    |
 
-## 二、交互审批（收到推送后）
+## 数据文件
 
-### 查看待回复列表
+### monitor_log.csv
 
-```bash
-cd /home/qee/.picoclaw/workspace/skills/taptap-monitor
-python3 scripts/reply_manager.py --list
-```
+舆情台账，长期存储所有处理过的帖子/评价。
 
-### 执行回复
+| 字段            | 说明            | 示例                          |
+| --------------- | --------------- | ----------------------------- |
+| create_time     | 发布时间        | 2026-03-16 17:30:00           |
+| source_id       | 来源 ID（主键） | 12345678                      |
+| source_type     | 类型            | 帖子/评价                     |
+| content         | 内容原文        | 怎么回事？新关卡一直进不去... |
+| content_summary | AI 摘要         | 玩家反馈新关卡进不去...       |
+| severity        | 定级            | P0/P1/P2                      |
+| category        | 分类            | Bug/建议/负面/正面/水贴       |
+| ai_suggestion   | AI 建议         | 收集设备信息...               |
+| url             | 直达链接        | https://www.taptap.cn/...     |
 
-```bash
-# 全部发布
-python3 scripts/execute_replies.py --all
+### history_ids.txt
 
-# 选择性发布（编号从 1 开始）
-python3 scripts/execute_replies.py --indices 1,3,5
+已处理的帖子/评价 ID 列表，用于去重。
 
-# 润色后发布（先更新 pending_replies.json，再执行）
-python3 scripts/execute_replies.py --all
-```
+### to_analyze.json
 
-### 润色回复
-
-告诉 Agent：「润色编号 1、3」，Agent 会：
-1. 调用菜汪技能重新生成回复
-2. 更新 `pending_replies.json`
-3. 推送更新后的内容
-
-### 跳过/删除
-
-```bash
-# 从待回复列表中删除指定项
-python3 scripts/reply_manager.py --remove 2,4
-```
-
----
-
-## 三、手动获取数据
-
-```bash
-cd /home/qee/.picoclaw/workspace/skills/taptap-monitor
-
-# 获取最新数据（帖子+评价各10条）
-python3 scripts/taptap_monitor.py --interval 0
-
-# 持续监控（每30分钟）
-python3 scripts/taptap_monitor.py --interval 30
-```
-
-**数据保存位置**：`data/236096_data.json`
-
-**评价关键字段**：
-- `id`: 评价短ID（用于构建链接 `/review/{id}`）
-- `link`: 完整链接
-- `rating`: 评分（1-5星）
-- `content`: 评价内容
-- `author`: 作者
-
-**帖子关键字段**：
-- `link`: 链接（`/moment/{id}`）
-- `title`: 标题
-- `author`: 作者
-
----
-
-## 四、手动回复
-
-### 首次使用：登录
-
-```bash
-python3 scripts/taptap_reply.py --login --visible
-```
-
-弹出浏览器窗口，扫码登录后按回车保存登录态。
-
-### 回复单条
-
-```bash
-python3 scripts/taptap_reply.py --url "https://www.taptap.cn/review/48009027" --content "感谢反馈汪！"
-```
-
-### 批量回复（自定义内容）
-
-**步骤 1**：准备 JSON 文件
+待 AI 分析的精简数据，格式：
 
 ```json
-{
-  "reviews": [
-    {"url": "https://www.taptap.cn/review/48009027", "reply_content": "感谢支持汪！"},
-    {"url": "https://www.taptap.cn/review/48008198", "reply_content": "角色萌萌哒~"}
-  ]
-}
+[
+  {
+    "id": "12345678",
+    "type": "post",
+    "content": "原文内容...",
+    "url": "https://www.taptap.cn/moment/...",
+    "created_at": "2026-03-16 17:30:00"
+  }
+]
 ```
 
-**步骤 2**：执行回复
+## 定级标准
+
+| 级别 | 触发条件                           | 处理时效 |
+| ---- | ---------------------------------- | -------- |
+| P0   | 阻断性 Bug、炸服、充值问题         | 立即     |
+| P1   | Bug 反馈、有节奏的负面、大规模吐槽 | 3 小时内 |
+| P2   | 常规吐槽、好评、水贴               | 当日     |
+
+## 分类与决策
+
+| 分类        | AI 操作                        |
+| ----------- | ------------------------------ |
+| Bug         | 收集设备信息，给出安抚回复参考 |
+| 负面-可转化 | 分析痛点，给出转化回复参考     |
+| 负面        | 判定恶意宣泄，给出投诉理由     |
+| 正面        | 给暖心致谢回复参考             |
+| 中立/建议   | 根据内容决定是否回复           |
+| 水贴        | 建议无视                       |
+
+## 触发词
+
+- TapTap监控、舆情监控、获取评价、监控任务
+
+## 使用方式
+
+### 手动执行爬虫
 
 ```bash
-python3 scripts/taptap_reply.py --data-file replies.json --auto
+cd /home/qee/.picoclaw/workspace/skills/taptap-monitor && .venv/bin/python scripts/main_sync.py
 ```
 
-### 参数说明
-
-| 参数 | 说明 |
-|------|------|
-| `--url` | 回复指定链接 |
-| `--content` | 回复内容 |
-| `--data-file` | JSON 数据文件（支持 `reply_content` 字段自定义回复） |
-| `--auto` | 自动确认，无需手动确认 |
-| `--max N` | 最多回复 N 条 |
-| `--dry-run` | 模拟运行，不实际发送 |
-| `--visible` | 显示浏览器窗口（调试用） |
-
-### 回复记录
-
-- 已回复 ID 保存在 `data/replies_236096.json`
-- 自动跳过已回复的内容
-
----
-
-## 五、投诉违规差评
+### 更新台账
 
 ```bash
-# 模拟运行（查看会投诉哪些）
-python3 scripts/taptap_complaint.py --dry-run
-
-# 实际投诉（每个需确认）
-python3 scripts/taptap_complaint.py --visible
-
-# 全自动投诉
-python3 scripts/taptap_complaint.py --auto --visible
+.venv/bin/python scripts/update_ledger.py \
+  --create_time "{{时间}}" \
+  --content "{{原始评论}}" \
+  --content_summary "{{摘要}}" \
+  --severity "{{定级}}" \
+  --category "{{分类}}" \
+  --ai_suggestion "{{回复参考/处理建议}}" \
+  --author "{{作者}}" \
+  --url "{{url}}"
 ```
 
-**违规检测规则**：
-- 谩骂：傻逼、垃圾游戏、脑残等
-- 拉踩：提及竞品 + 不如/吊打
-- 敏感词：代练、外挂、破解版
+### 定时任务
 
----
+每 30 分钟自动执行，详见 MEMORY.md 中的「TapTap 舆情监控及决策辅助任务」。
 
-## 六、菜汪回复生成器
+## 依赖
 
-```bash
-# 独立使用（测试用）
-python3 scripts/caiwang_reply.py --content "玩家评论内容" --rating 5
-```
+- Python 3.10+
+- requests
+- beautifulsoup4
+- dingtalk-push 技能（推送告警）
 
-菜汪技能会自动调用，一般无需手动执行。
+## 更新日志
 
----
-
-## 七、常见问题
-
-**Q: 获取数据失败？**
-检查 Playwright：`pip install playwright && playwright install chromium`
-
-**Q: 回复失败？**
-1. 先执行 `--login --visible` 重新登录
-2. 用 `--check-login` 检查登录状态
-
-**Q: 评价链接格式错误？**
-评价链接必须用短 ID 格式：`/review/48009027`（不是长 ID）
-
----
-
-## 八、文件结构
-
-```
-taptap-monitor/
-├── SKILL.md              # 本文档
-├── login_taptap.py       # 登录脚本
-├── scripts/
-│   ├── daily_monitor.py      # 每日监控主脚本（定时任务调用）
-│   ├── execute_replies.py    # 执行回复
-│   ├── caiwang_reply.py      # 菜汪回复生成器
-│   ├── reply_manager.py      # 回复列表管理
-│   ├── taptap_monitor.py     # 数据获取
-│   ├── taptap_reply.py       # 回复执行
-│   └── taptap_complaint.py   # 投诉违规
-├── data/
-│   ├── 236096_data.json      # 历史数据
-│   ├── pending_replies.json  # 待回复列表
-│   ├── replies_236096.json   # 已回复记录
-│   ├── cookies_236096.json   # 登录态
-│   └── push_content.md       # 推送内容
-└── references/            # 参考资料
-```
-
----
-
-**最后更新**：2026-03-13
-**适用游戏**：盲盒派对 (236096)
+- 2026-03-21：新增 `bug_tasks.md` Bug 任务跟踪、`daily_reports.md` 日报归档；新增每日舆情总结定时任务
+- 2026-03-19：迁移至 skills 目录，更新路径，新增 update_ledger.py 说明
+- 2026-03-16：v2.0 初始化，重构架构
